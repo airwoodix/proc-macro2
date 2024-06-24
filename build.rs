@@ -9,9 +9,9 @@ use std::process::{self, Command, Stdio};
 use std::str;
 
 fn main() {
-    let rustc = rustc_minor_version().unwrap_or(u32::MAX);
+    let rustc = rustc_minor_version().unwrap_or_default();
 
-    if rustc >= 80 {
+    if rustc.minor >= 80 {
         println!("cargo:rustc-check-cfg=cfg(fuzzing)");
         println!("cargo:rustc-check-cfg=cfg(no_is_available)");
         println!("cargo:rustc-check-cfg=cfg(no_literal_byte_character)");
@@ -41,7 +41,7 @@ fn main() {
         println!("cargo:rustc-cfg=span_locations");
     }
 
-    if rustc < 57 {
+    if rustc.minor < 57 {
         // Do not use proc_macro::is_available() to detect whether the proc
         // macro API is available vs needs to be polyfilled. Instead, use the
         // proc macro API unconditionally and catch the panic that occurs if it
@@ -49,12 +49,18 @@ fn main() {
         println!("cargo:rustc-cfg=no_is_available");
     }
 
-    if rustc < 66 {
+    if rustc.minor == 57 && rustc.nightly {
+        // Rustc 1.57 nightly has the proc_macro_is_available feature
+        // but it is unstable.
+        println!("cargo:rustc-cfg=unstable_is_available");
+    }
+
+    if rustc.minor < 66 {
         // Do not call libproc_macro's Span::source_text. Always return None.
         println!("cargo:rustc-cfg=no_source_text");
     }
 
-    if rustc < 79 {
+    if rustc.minor < 79 {
         // Do not call Literal::byte_character nor Literal::c_string. They can
         // be emulated by way of Literal::from_str.
         println!("cargo:rustc-cfg=no_literal_byte_character");
@@ -191,7 +197,22 @@ fn compile_probe(rustc_bootstrap: bool) -> bool {
     }
 }
 
-fn rustc_minor_version() -> Option<u32> {
+#[derive(Debug)]
+struct RustcVersion {
+    minor: u32,
+    nightly: bool,
+}
+
+impl Default for RustcVersion {
+    fn default() -> Self {
+        Self {
+            minor: u32::MAX,
+            nightly: false,
+        }
+    }
+}
+
+fn rustc_minor_version() -> Option<RustcVersion> {
     let rustc = cargo_env_var("RUSTC");
     let output = Command::new(rustc).arg("--version").output().ok()?;
     let version = str::from_utf8(&output.stdout).ok()?;
@@ -199,7 +220,10 @@ fn rustc_minor_version() -> Option<u32> {
     if pieces.next() != Some("rustc 1") {
         return None;
     }
-    pieces.next()?.parse().ok()
+    let minor = pieces.next()?.parse().ok()?;
+    let nightly = version.contains("nightly");
+
+    Some(RustcVersion { minor, nightly })
 }
 
 fn cargo_env_var(key: &str) -> OsString {
